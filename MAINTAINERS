@@ -9037,6 +9037,7 @@ L:	netdev@vger.kernel.org
 S:	Supported
 F:	net/switchdev/
 F:	include/net/switchdev.h
+F:	include/uapi/linux/switchdev.h
 
 SYNOPSYS ARC ARCHITECTURE
 M:	Vineet Gupta <vgupta@synopsys.com>

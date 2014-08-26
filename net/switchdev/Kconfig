@@ -11,3 +11,14 @@ config NET_SWITCHDEV
 	  meaning of the word "switch". This include devices supporting L2/L3 but
 	  also various flow offloading chips, including switches embedded into
 	  SR-IOV NICs.
+
+config NET_SWITCHDEV_NETLINK
+	tristate "Netlink interface to Switch device"
+	depends on NET_SWITCHDEV
+	default m
+	---help---
+	  This module provides Generic Netlink intercace to hardware switch
+	  chips.
+
+	  To compile this code as a module, choose M here: the
+	  module will be called switchdev_netlink.
