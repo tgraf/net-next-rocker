@@ -1022,6 +1022,16 @@ typedef u16 (*select_queue_fallback_t)(struct net_device *dev,
  *	Called to get an ID of the switch chip this port is part of.
  *	If driver implements this, it indicates that it represents a port
  *	of a switch chip.
+ *
+ * int (*ndo_sw_port_fdb_add)(struct net_device *dev,
+ *			      const unsigned char *addr,
+ *			      u16 vid);
+ *	Called to add a fdb to switch device port.
+ *
+ * int (*ndo_sw_port_fdb_del)(struct net_device *dev,
+ *			      const unsigned char *addr,
+ *			      u16 vid);
+ *	Called to delete a fdb from switch device port.
  */
 struct net_device_ops {
 	int			(*ndo_init)(struct net_device *dev);
@@ -1176,6 +1186,12 @@ struct net_device_ops {
 #ifdef CONFIG_NET_SWITCHDEV
 	int			(*ndo_sw_parent_id_get)(struct net_device *dev,
 							struct netdev_phys_item_id *psid);
+	int			(*ndo_sw_port_fdb_add)(struct net_device *dev,
+						       const unsigned char *addr,
+						       u16 vid);
+	int			(*ndo_sw_port_fdb_del)(struct net_device *dev,
+						       const unsigned char *addr,
+						       u16 vid);
 #endif
 };
 

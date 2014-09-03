@@ -24,6 +24,7 @@
 #include <linux/atomic.h>
 #include <asm/unaligned.h>
 #include <linux/if_vlan.h>
+#include <net/switchdev.h>
 #include "br_private.h"
 
 static struct kmem_cache *br_fdb_cache __read_mostly;
@@ -132,8 +133,12 @@ static void fdb_del_hw(struct net_bridge *br, const unsigned char *addr)
 
 static void fdb_delete(struct net_bridge *br, struct net_bridge_fdb_entry *f)
 {
-	if (f->is_static)
+	if (f->is_static) {
 		fdb_del_hw(br, f->addr.addr);
+		if (f->dst)
+			netdev_sw_port_fdb_del(f->dst->dev,
+					       f->addr.addr, f->vlan_id);
+	}
 
 	hlist_del_rcu(&f->hlist);
 	fdb_notify(br, f, RTM_DELNEIGH);
@@ -755,18 +760,21 @@ static int fdb_add_entry(struct net_bridge_port *source, const __u8 *addr,
 			if (!fdb->is_static) {
 				fdb->is_static = 1;
 				fdb_add_hw(br, addr);
+				netdev_sw_port_fdb_add(source->dev, addr, vid);
 			}
 		} else if (state & NUD_NOARP) {
 			fdb->is_local = 0;
 			if (!fdb->is_static) {
 				fdb->is_static = 1;
 				fdb_add_hw(br, addr);
+				netdev_sw_port_fdb_add(source->dev, addr, vid);
 			}
 		} else {
 			fdb->is_local = 0;
 			if (fdb->is_static) {
 				fdb->is_static = 0;
 				fdb_del_hw(br, addr);
+				netdev_sw_port_fdb_del(source->dev, addr, vid);
 			}
 		}
 
