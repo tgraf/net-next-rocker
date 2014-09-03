@@ -1,6 +1,7 @@
 /*
  * include/net/switchdev.h - Switch device API
  * Copyright (c) 2014 Jiri Pirko <jiri@resnulli.us>
+ * Copyright (c) 2014 Scott Feldman <sfeldma@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -16,11 +17,27 @@
 
 int netdev_switch_parent_id_get(struct net_device *dev,
 				struct netdev_phys_item_id *psid);
+int netdev_switch_port_fdb_add(struct net_device *dev,
+			       const unsigned char *addr, u16 vid);
+int netdev_switch_port_fdb_del(struct net_device *dev,
+			       const unsigned char *addr, u16 vid);
 
 #else
 
 static inline int netdev_switch_parent_id_get(struct net_device *dev,
 					      struct netdev_phys_item_id *psid)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int netdev_switch_port_fdb_add(struct net_device *dev,
+					     const unsigned char *addr, u16 vid)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int netdev_switch_port_fdb_del(struct net_device *dev,
+					     const unsigned char *addr, u16 vid)
 {
 	return -EOPNOTSUPP;
 }

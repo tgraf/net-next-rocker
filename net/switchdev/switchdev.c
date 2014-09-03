@@ -1,6 +1,7 @@
 /*
  * net/switchdev/switchdev.c - Switch device API
  * Copyright (c) 2014 Jiri Pirko <jiri@resnulli.us>
+ * Copyright (c) 2014 Scott Feldman <sfeldma@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -31,3 +32,41 @@ int netdev_switch_parent_id_get(struct net_device *dev,
 	return ops->ndo_switch_parent_id_get(dev, psid);
 }
 EXPORT_SYMBOL(netdev_switch_parent_id_get);
+
+/**
+ *	netdev_switch_port_fdb_add - Add FDB entry into switch port
+ *	@dev: port device
+ *	@addr: mac address
+ *	@vid: vlan id
+ *
+ *	Add a fdb into switch port.
+ */
+int netdev_switch_port_fdb_add(struct net_device *dev,
+			       const unsigned char *addr, u16 vid)
+{
+	const struct net_device_ops *ops = dev->netdev_ops;
+
+	if (!ops->ndo_switch_parent_id_get)
+		return -EOPNOTSUPP;
+	return dev_fdb_add(dev, addr, vid);
+}
+EXPORT_SYMBOL(netdev_switch_port_fdb_add);
+
+/**
+ *	netdev_switch_port_fdb_del - Delete FDB entry from switch port
+ *	@dev: port device
+ *	@addr: mac address
+ *	@vid: vlan id
+ *
+ *	Delete a fdb from switch port.
+ */
+int netdev_switch_port_fdb_del(struct net_device *dev,
+			       const unsigned char *addr, u16 vid)
+{
+	const struct net_device_ops *ops = dev->netdev_ops;
+
+	if (!ops->ndo_switch_parent_id_get)
+		return -EOPNOTSUPP;
+	return dev_fdb_del(dev, addr, vid);
+}
+EXPORT_SYMBOL(netdev_switch_port_fdb_del);

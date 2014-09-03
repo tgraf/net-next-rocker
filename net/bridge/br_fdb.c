@@ -24,6 +24,7 @@
 #include <linux/atomic.h>
 #include <asm/unaligned.h>
 #include <linux/if_vlan.h>
+#include <net/switchdev.h>
 #include "br_private.h"
 
 static struct kmem_cache *br_fdb_cache __read_mostly;
