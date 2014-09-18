@@ -772,6 +772,7 @@ static inline bool netdev_phys_item_ids_match(struct netdev_phys_item_id *id1,
 typedef u16 (*select_queue_fallback_t)(struct net_device *dev,
 				       struct sk_buff *skb);
 
+#include <net/switchdev.h>
 struct fib_info;
 
 /*
@@ -1059,6 +1060,18 @@ struct fib_info;
  *				     struct fib_info *fi,
  *				     u8 tos, u8 type,
  *				     u32 tb_id);
+ *
+ * int (*ndo_sw_parent_flow_insert)(struct net_device *dev,
+ *				    const struct swdev_flow *flow);
+ *	Called to insert a flow into switch device. If driver does
+ *	not implement this, it is assumed that the hw does not have
+ *	a capability to work with flows.
+ *
+ * int (*ndo_sw_parent_flow_remove)(struct net_device *dev,
+ *				    const struct swdev_flow *flow);
+ *	Called to remove a flow from switch device. If driver does
+ *	not implement this, it is assumed that the hw does not have
+ *	a capability to work with flows.
  */
 struct net_device_ops {
 	int			(*ndo_init)(struct net_device *dev);
@@ -1233,6 +1246,10 @@ struct net_device_ops {
 							      struct fib_info *fi,
 							      u8 tos, u8 type,
 							      u32 tb_id);
+	int			(*ndo_sw_parent_flow_insert)(struct net_device *dev,
+							     const struct swdev_flow *flow);
+	int			(*ndo_sw_parent_flow_remove)(struct net_device *dev,
+							     const struct swdev_flow *flow);
 #endif
 };
 
