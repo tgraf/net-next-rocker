@@ -12,10 +12,21 @@
 #define _LINUX_SWITCHDEV_H_
 
 struct swdev_flow;
+typedef u64 swdev_features_t;
 
 #include <linux/netdevice.h>
 
 struct fib_info;
+
+enum {
+	SWDEV_F_FLOW_MATCH_KEY_BIT,	/* Supports fixed key match */
+	/**/SWDEV_FEATURE_COUNT
+};
+
+#define __SWDEV_F_BIT(bit)	((swdev_features_t)1 << (bit))
+#define __SWDEV_F(name)		__SWDEV_F_BIT(SWDEV_F_##name##_BIT)
+
+#define SWDEV_F_FLOW_MATCH_KEY	__SWDEV_F(FLOW_MATCH_KEY)
 
 struct swdev_flow_match_key {
 	struct {
@@ -129,6 +140,7 @@ int netdev_sw_fib_ipv4_add(u32 dst, int dst_len, struct fib_info *fi, u8 tos,
 			   u8 type, u32 tb_id);
 int netdev_sw_fib_ipv4_del(u32 dst, int dst_len, struct fib_info *fi, u8 tos,
 			   u8 type, u32 tb_id);
+swdev_features_t netdev_sw_parent_features_get(struct net_device *dev);
 int netdev_sw_parent_flow_insert(struct net_device *dev,
 				 const struct swdev_flow *flow);
 int netdev_sw_parent_flow_remove(struct net_device *dev,
@@ -171,6 +183,11 @@ static inline int netdev_sw_fib_ipv4_del(u32 dst, int dst_len,
 					 u8 tos, u8 type, u32 tb_id)
 {
 	return -EOPNOTSUPP;
+}
+
+static inline swdev_features_t netdev_sw_parent_features_get(struct net_device *dev)
+{
+	return 0;
 }
 
 static inline int netdev_sw_parent_flow_insert(struct net_device *dev,

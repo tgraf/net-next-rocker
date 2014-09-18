@@ -1061,6 +1061,10 @@ struct fib_info;
  *				     u8 tos, u8 type,
  *				     u32 tb_id);
  *
+ * swdev_features_t (*ndo_sw_parent_features_get)(struct net_device *dev);
+ *	Called to get a list of features the switch chip this port is part of
+ *	supports.
+ *
  * int (*ndo_sw_parent_flow_insert)(struct net_device *dev,
  *				    const struct swdev_flow *flow);
  *	Called to insert a flow into switch device. If driver does
@@ -1246,6 +1250,7 @@ struct net_device_ops {
 							      struct fib_info *fi,
 							      u8 tos, u8 type,
 							      u32 tb_id);
+	swdev_features_t	(*ndo_sw_parent_features_get)(struct net_device *dev);
 	int			(*ndo_sw_parent_flow_insert)(struct net_device *dev,
 							     const struct swdev_flow *flow);
 	int			(*ndo_sw_parent_flow_remove)(struct net_device *dev,

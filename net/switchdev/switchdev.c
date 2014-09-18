@@ -157,6 +157,22 @@ int netdev_sw_fib_ipv4_del(u32 dst, int dst_len, struct fib_info *fi, u8 tos,
 }
 EXPORT_SYMBOL(netdev_sw_fib_ipv4_del);
 
+/**
+ *	netdev_sw_parent_features_get - Get list of features switch supports
+ *	@dev: port device
+ *
+ *	Get list of features switch this port is part of supports.
+ */
+swdev_features_t netdev_sw_parent_features_get(struct net_device *dev)
+{
+	const struct net_device_ops *ops = dev->netdev_ops;
+
+	if (!ops->ndo_sw_parent_features_get)
+		return 0;
+	return ops->ndo_sw_parent_features_get(dev);
+}
+EXPORT_SYMBOL(netdev_sw_parent_features_get);
+
 static void print_flow_key_phy(const char *prefix,
 			       const struct swdev_flow_match_key *key)
 {
@@ -242,6 +258,15 @@ static void print_flow(const struct swdev_flow *flow, struct net_device *dev,
 	print_flow_actions(flow->action, flow->action_count);
 }
 
+static int check_match_type_features(struct net_device *dev,
+				     const struct swdev_flow *flow)
+{
+	if (flow->match.type == SW_FLOW_MATCH_TYPE_KEY &&
+	    !(netdev_sw_parent_features_get(dev) & SWDEV_F_FLOW_MATCH_KEY))
+		return -EOPNOTSUPP;
+	return 0;
+}
+
 /**
  *	netdev_sw_parent_flow_insert - Insert a flow into switch
  *	@dev: port device
@@ -253,10 +278,14 @@ int netdev_sw_parent_flow_insert(struct net_device *dev,
 				 const struct swdev_flow *flow)
 {
 	const struct net_device_ops *ops = dev->netdev_ops;
+	int err;
 
 	print_flow(flow, dev, "insert");
 	if (!ops->ndo_sw_parent_flow_insert)
 		return -EOPNOTSUPP;
+	err = check_match_type_features(dev, flow);
+	if (err)
+		return err;
 	WARN_ON(!ops->ndo_sw_parent_id_get);
 	return ops->ndo_sw_parent_flow_insert(dev, flow);
 }
@@ -273,10 +302,14 @@ int netdev_sw_parent_flow_remove(struct net_device *dev,
 				 const struct swdev_flow *flow)
 {
 	const struct net_device_ops *ops = dev->netdev_ops;
+	int err;
 
 	print_flow(flow, dev, "remove");
 	if (!ops->ndo_sw_parent_flow_remove)
 		return -EOPNOTSUPP;
+	err = check_match_type_features(dev, flow);
+	if (err)
+		return err;
 	WARN_ON(!ops->ndo_sw_parent_id_get);
 	return ops->ndo_sw_parent_flow_remove(dev, flow);
 }
