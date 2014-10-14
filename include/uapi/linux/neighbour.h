@@ -40,6 +40,7 @@ enum {
 
 #define NTF_SELF	0x02
 #define NTF_MASTER	0x04
+#define NTF_EXT_LEARNED	0x10
 
 /*
  *	Neighbor Cache Entry States.

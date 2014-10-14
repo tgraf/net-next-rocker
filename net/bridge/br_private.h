@@ -101,6 +101,7 @@ struct net_bridge_fdb_entry
 	unsigned char			is_local;
 	unsigned char			is_static;
 	unsigned char			added_by_user;
+	unsigned char			added_by_external_learn;
 	__u16				vlan_id;
 };
 
