@@ -21,6 +21,7 @@ int netdev_sw_port_fdb_add(struct net_device *dev,
 			   const unsigned char *addr, u16 vid);
 int netdev_sw_port_fdb_del(struct net_device *dev,
 			   const unsigned char *addr, u16 vid);
+int netdev_sw_port_stp_update(struct net_device *dev, u8 state);
 
 #else
 
@@ -38,6 +39,11 @@ static inline int netdev_sw_port_fdb_add(struct net_device *dev,
 
 static inline int netdev_sw_port_fdb_del(struct net_device *dev,
 					 const unsigned char *addr, u16 vid)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int netdev_sw_port_stp_update(struct net_device *dev, u8 state)
 {
 	return -EOPNOTSUPP;
 }

@@ -17,6 +17,7 @@
 #include <net/net_namespace.h>
 #include <net/sock.h>
 #include <uapi/linux/if_bridge.h>
+#include <net/switchdev.h>
 
 #include "br_private.h"
 #include "br_private_stp.h"
@@ -304,6 +305,7 @@ static int br_set_port_state(struct net_bridge_port *p, u8 state)
 
 	br_set_state(p, state);
 	br_log_state(p);
+	netdev_sw_port_stp_update(p->dev, p->state);
 	br_port_state_selection(p->br);
 	return 0;
 }

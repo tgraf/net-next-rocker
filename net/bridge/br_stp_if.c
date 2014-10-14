@@ -15,6 +15,7 @@
 #include <linux/kmod.h>
 #include <linux/etherdevice.h>
 #include <linux/rtnetlink.h>
+#include <net/switchdev.h>
 
 #include "br_private.h"
 #include "br_private_stp.h"
@@ -89,6 +90,7 @@ void br_stp_enable_port(struct net_bridge_port *p)
 	br_init_port(p);
 	br_port_state_selection(p->br);
 	br_log_state(p);
+	netdev_sw_port_stp_update(p->dev, p->state);
 	br_ifinfo_notify(RTM_NEWLINK, p);
 }
 
@@ -105,6 +107,7 @@ void br_stp_disable_port(struct net_bridge_port *p)
 	p->config_pending = 0;
 
 	br_log_state(p);
+	netdev_sw_port_stp_update(p->dev, p->state);
 	br_ifinfo_notify(RTM_NEWLINK, p);
 
 	del_timer(&p->message_age_timer);

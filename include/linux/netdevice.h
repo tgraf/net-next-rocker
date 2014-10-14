@@ -1032,6 +1032,10 @@ typedef u16 (*select_queue_fallback_t)(struct net_device *dev,
  *			      const unsigned char *addr,
  *			      u16 vid);
  *	Called to delete a fdb from switch device port.
+ *
+ * int (*ndo_sw_port_stp_update)(struct net_device *dev, u8 state);
+ *	Called to notify switch device port of bridge port STP
+ *	state change.
  */
 struct net_device_ops {
 	int			(*ndo_init)(struct net_device *dev);
@@ -1192,6 +1196,8 @@ struct net_device_ops {
 	int			(*ndo_sw_port_fdb_del)(struct net_device *dev,
 						       const unsigned char *addr,
 						       u16 vid);
+	int			(*ndo_sw_port_stp_update)(struct net_device *dev,
+							  u8 state);
 #endif
 };
 

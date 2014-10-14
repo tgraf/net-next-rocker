@@ -13,6 +13,7 @@
 
 #include <linux/kernel.h>
 #include <linux/times.h>
+#include <net/switchdev.h>
 
 #include "br_private.h"
 #include "br_private_stp.h"
@@ -97,6 +98,7 @@ static void br_forward_delay_timer_expired(unsigned long arg)
 		netif_carrier_on(br->dev);
 	}
 	br_log_state(p);
+	netdev_sw_port_stp_update(p->dev, p->state);
 	br_ifinfo_notify(RTM_NEWLINK, p);
 	spin_unlock(&br->lock);
 }
