@@ -15,6 +15,7 @@
 #include <linux/kmod.h>
 #include <linux/etherdevice.h>
 #include <linux/rtnetlink.h>
+#include <net/switchdev.h>
 
 #include "br_private.h"
 #include "br_private_stp.h"

@@ -17,6 +17,7 @@
 #include <net/net_namespace.h>
 #include <net/sock.h>
 #include <uapi/linux/if_bridge.h>
+#include <net/switchdev.h>
 
 #include "br_private.h"
 #include "br_private_stp.h"
