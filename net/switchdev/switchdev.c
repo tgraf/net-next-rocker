@@ -13,6 +13,7 @@
 #include <linux/types.h>
 #include <linux/init.h>
 #include <linux/netdevice.h>
+#include <net/ip_fib.h>
 #include <net/switchdev.h>
 
 /**
@@ -91,3 +92,67 @@ int netdev_sw_port_stp_update(struct net_device *dev, u8 state)
 	return ops->ndo_sw_port_stp_update(dev, state);
 }
 EXPORT_SYMBOL(netdev_sw_port_stp_update);
+
+static struct net_device *swdev_dev_get_by_fib_dev(struct net_device *dev)
+{
+	const struct net_device_ops *ops = dev->netdev_ops;
+	struct net_device *lower_dev;
+	struct net_device *port_dev;
+	struct list_head *iter;
+
+	/* Recusively search from fib_dev down until we find
+	 * a sw port dev.  (A sw port dev supports
+	 * ndo_sw_parent_id_get).
+	 */
+
+	if (ops->ndo_sw_parent_id_get)
+		return dev;
+
+	netdev_for_each_lower_dev(dev, lower_dev, iter) {
+		port_dev = swdev_dev_get_by_fib_dev(lower_dev);
+		if (port_dev)
+			return port_dev;
+	}
+
+	return NULL;
+}
+
+int netdev_sw_fib_ipv4_add(u32 dst, int dst_len, struct fib_info *fi, u8 tos,
+			   u8 type, u32 tb_id)
+{
+	struct net_device *dev;
+	const struct net_device_ops *ops;
+	int err = -EOPNOTSUPP;
+
+	dev = swdev_dev_get_by_fib_dev(fi->fib_dev);
+	if (!dev)
+		return -EOPNOTSUPP;
+	ops = dev->netdev_ops;
+
+	if (ops->ndo_sw_parent_fib_ipv4_add)
+		err = ops->ndo_sw_parent_fib_ipv4_add(dev, htonl(dst), dst_len,
+						      fi, tos, type, tb_id);
+
+	return err;
+}
+EXPORT_SYMBOL(netdev_sw_fib_ipv4_add);
+
+int netdev_sw_fib_ipv4_del(u32 dst, int dst_len, struct fib_info *fi, u8 tos,
+			   u8 type, u32 tb_id)
+{
+	struct net_device *dev;
+	const struct net_device_ops *ops;
+	int err = -EOPNOTSUPP;
+
+	dev = swdev_dev_get_by_fib_dev(fi->fib_dev);
+	if (!dev)
+		return -EOPNOTSUPP;
+	ops = dev->netdev_ops;
+
+	if (ops->ndo_sw_parent_fib_ipv4_del)
+		err = ops->ndo_sw_parent_fib_ipv4_del(dev, htonl(dst), dst_len,
+						      fi, tos, type, tb_id);
+
+	return err;
+}
+EXPORT_SYMBOL(netdev_sw_fib_ipv4_del);

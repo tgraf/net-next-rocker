@@ -79,6 +79,7 @@
 #include <net/tcp.h>
 #include <net/sock.h>
 #include <net/ip_fib.h>
+#include <net/switchdev.h>
 #include "fib_lookup.h"
 
 #define MAX_STAT_DEPTH 32
@@ -1268,6 +1269,8 @@ int fib_table_insert(struct fib_table *tb, struct fib_config *cfg)
 			fib_release_info(fi_drop);
 			if (state & FA_S_ACCESSED)
 				rt_cache_flush(cfg->fc_nlinfo.nl_net);
+			netdev_sw_fib_ipv4_add(key, plen, fi, fa->fa_tos,
+					       cfg->fc_type, tb->tb_id);
 			rtmsg_fib(RTM_NEWROUTE, htonl(key), new_fa, plen,
 				tb->tb_id, &cfg->fc_nlinfo, NLM_F_REPLACE);
 
@@ -1296,6 +1299,13 @@ int fib_table_insert(struct fib_table *tb, struct fib_config *cfg)
 	new_fa->fa_tos = tos;
 	new_fa->fa_type = cfg->fc_type;
 	new_fa->fa_state = 0;
+
+	/* (Optionally) offload fib info to switch hardware. */
+	err = netdev_sw_fib_ipv4_add(key, plen, fi, tos,
+				     cfg->fc_type, tb->tb_id);
+	if (err && err != -EOPNOTSUPP)
+		goto out_free_new_fa;
+
 	/*
 	 * Insert new entry to the list.
 	 */
@@ -1304,7 +1314,7 @@ int fib_table_insert(struct fib_table *tb, struct fib_config *cfg)
 		fa_head = fib_insert_node(t, key, plen);
 		if (unlikely(!fa_head)) {
 			err = -ENOMEM;
-			goto out_free_new_fa;
+			goto out_sw_fib_del;
 		}
 	}
 
@@ -1320,6 +1330,8 @@ int fib_table_insert(struct fib_table *tb, struct fib_config *cfg)
 succeeded:
 	return 0;
 
+out_sw_fib_del:
+	netdev_sw_fib_ipv4_del(key, plen, fi, tos, cfg->fc_type, tb->tb_id);
 out_free_new_fa:
 	kmem_cache_free(fn_alias_kmem, new_fa);
 out:
@@ -1676,6 +1688,9 @@ int fib_table_delete(struct fib_table *tb, struct fib_config *cfg)
 	fa = fa_to_delete;
 	rtmsg_fib(RTM_DELROUTE, htonl(key), fa, plen, tb->tb_id,
 		  &cfg->fc_nlinfo, 0);
+
+	netdev_sw_fib_ipv4_del(key, plen, fa->fa_info, tos,
+			       cfg->fc_type, tb->tb_id);
 
 	list_del_rcu(&fa->fa_list);
 

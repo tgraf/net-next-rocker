@@ -13,6 +13,8 @@
 
 #include <linux/netdevice.h>
 
+struct fib_info;
+
 #ifdef CONFIG_NET_SWITCHDEV
 
 int netdev_sw_parent_id_get(struct net_device *dev,
@@ -22,6 +24,10 @@ int netdev_sw_port_fdb_add(struct net_device *dev,
 int netdev_sw_port_fdb_del(struct net_device *dev,
 			   const unsigned char *addr, u16 vid);
 int netdev_sw_port_stp_update(struct net_device *dev, u8 state);
+int netdev_sw_fib_ipv4_add(u32 dst, int dst_len, struct fib_info *fi, u8 tos,
+			   u8 type, u32 tb_id);
+int netdev_sw_fib_ipv4_del(u32 dst, int dst_len, struct fib_info *fi, u8 tos,
+			   u8 type, u32 tb_id);
 
 #else
 
@@ -44,6 +50,20 @@ static inline int netdev_sw_port_fdb_del(struct net_device *dev,
 }
 
 static inline int netdev_sw_port_stp_update(struct net_device *dev, u8 state)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int netdev_sw_fib_ipv4_add(u32 dst, int dst_len,
+					 struct fib_info *fi,
+					 u8 tos, u8 type, u32 tb_id)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int netdev_sw_fib_ipv4_del(u32 dst, int dst_len,
+					 struct fib_info *fi,
+					 u8 tos, u8 type, u32 tb_id)
 {
 	return -EOPNOTSUPP;
 }
