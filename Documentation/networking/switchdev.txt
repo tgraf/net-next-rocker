@@ -1,59 +1,379 @@
-Switch (and switch-ish) device drivers HOWTO
-===========================
+Ethernet switch device driver model documentation
+=================================================
+Copyright (c) 2014 Jiri Pirko <jiri@resnulli.us>
+Copyright (c) 2014 Scott Feldman <sfeldma@gmail.com>
 
-Please note that the word "switch" is here used in very generic meaning.
-This include devices supporting L2/L3 but also various flow offloading chips,
-including switches embedded into SR-IOV NICs.
 
-Lets describe a topology a bit. Imagine the following example:
+The Ethernet switch device driver model is an in-kernel driver model for switch
+devices offloading the forwarding (data) plane network traffic from the network
+controller.  The network controller could be the kernel itself (see Fig. 1).
 
-       +----------------------------+    +---------------+
-       |     SOME switch chip       |    |      CPU      |
-       +----------------------------+    +---------------+
-       port1 port2 port3 port4 MNGMNT    |     PCI-E     |
-         |     |     |     |     |       +---------------+
-        PHY   PHY    |     |     |         |  NIC0 NIC1
-                     |     |     |         |   |    |
-                     |     |     +- PCI-E -+   |    |
-                     |     +------- MII -------+    |
-                     +------------- MII ------------+
+                             User-space tools                                 
+                                                                              
+       user space                   |                                         
+      +-------------------------------------------------------------------+   
+       kernel                       | Netlink                                 
+                                    |                                         
+                     +--------------+-------------------------------+         
+                     |         Network stack                        |         
+                     |           (Linux)                            |         
+                     |                                              |         
+                     +----------------------------------------------+         
+                                                                              
+                      swp1  swp2 swp3 swp4 swp5 swp6         eth1             
+                        +    +    +    +    +    +            +               
+                        |    |    |    |    |    |            |               
+                     +--+----+----+----+-+--+----+---+  +-----+-----+         
+                     |         Switch driver         |  |    mgmt   |         
+                     |        (this document)        |  |   driver  |         
+                     |                               |  |           |         
+                     +--------------+----------------+  +-----------+         
+                                    |                                         
+       kernel                       | HW bus (eg PCI)                         
+      +-------------------------------------------------------------------+   
+       hardware                     |                                         
+                     +--------------+---+------------+                        
+                     |         Switch device         |                        
+                     |  +----+                       +--------+               
+                     |  |    v offloaded data path   | mgmt port              
+                     |  |    |                       |                        
+                     +--|----|----+----+----+----+---+                        
+                        |    |    |    |    |    |                            
+                        +    +    +    +    +    +                            
+                                                                              
+                             front-panel ports                                
+                                                                              
 
-In this example, there are two independent lines between the switch silicon
-and CPU. NIC0 and NIC1 drivers are not aware of a switch presence. They are
-separate from the switch driver. SOME switch chip is by managed by a driver
-via PCI-E device MNGMNT. Note that MNGMNT device, NIC0 and NIC1 may be
-connected to some other type of bus.
+                                    Fig 1.
 
-Now, for the previous example show the representation in kernel:
 
-       +----------------------------+    +---------------+
-       |     SOME switch chip       |    |      CPU      |
-       +----------------------------+    +---------------+
-       sw0p0 sw0p1 sw0p2 sw0p3 MNGMNT    |     PCI-E     |
-         |     |     |     |     |       +---------------+
-        PHY   PHY    |     |     |         |  eth0 eth1
-                     |     |     |         |   |    |
-                     |     |     +- PCI-E -+   |    |
-                     |     +------- MII -------+    |
-                     +------------- MII ------------+
+Or the network controller could be split between local and remote (see Fig. 2).
+                                                                              
+                                                                              
+                        +-------------------------+                           
+                        |   Remote controller     |                           
+                        |                         |                           
+                        +-----------+-------------+                           
+                                    |                                         
+                                    |                                         
+                                    |                                         
+                                    |                                         
+                       +------------+---------------+                         
+                       |  Network controller agent  |                         
+                 +-----+                            |                         
+                 |     |                            |                         
+                 |     +------------+---------------+                         
+       user space|                  |                                         
+      +-------------------------------------------------------------------+   
+       kernel    |                  |                                         
+                 |                  |                                         
+                 |   +--------------+-------------------------------+         
+                 |   |       Network controller kernel agent        |         
+                 |   |           (eg openvswitch.ko)                |         
+                 |   |                                              |         
+                 |   +----------------------------------------------+         
+                 |                                                            
+                 |    swp1  swp2 swp3 swp4 swp5 swp6         eth1             
+                 |      +    +    +    +    +    +            +               
+                 |      |    |    |    |    |    |            |               
+                 |   +--+----+----+----+-+--+----+---+  +-----+-----+         
+                 |   |         Switch driver         |  |    mgmt   |         
+                 +---+        (this document)        |  |   driver  |         
+                     |                               |  |           |         
+                     +--------------+----------------+  +-----------+         
+                                    |                                         
+       kernel                       | HW bus (eg PCI)                         
+      +-------------------------------------------------------------------+   
+       hardware                     |                                         
+                     +--------------+---+------------+                        
+                     |         Switch device         |                        
+                     |  +----+                       +--------+               
+                     |  |    v offloaded data path   | mgmt port              
+                     |  |    |                       |                        
+                     +--|----|----+----+----+----+---+                        
+                        |    |    |    |    |    |                            
+                        +    +    +    +    +    +                            
+                                                                              
+                             front-panel ports                                
+                                                                              
+                                                                              
+                                   Fig. 2
 
-Lets call the example switch driver for SOME switch chip "SOMEswitch". This
-driver takes care of PCI-E device MNGMNT. There is a netdevice instance sw0pX
-created for each port of a switch. These netdevices are instances
-of "SOMEswitch" driver. sw0pX netdevices serve as a "representation"
-of the switch chip. eth0 and eth1 are instances of some other existing driver.
 
-The only difference of the switch-port netdevice from the ordinary netdevice
-is that is implements couple more NDOs:
 
-	ndo_sw_parent_id_get - This returns the same ID for two port netdevices
-			       of the same physical switch chip. This is
-			       mandatory to be implemented by all switch drivers
-			       and serves the caller for recognition of a port
-			       netdevice.
-	ndo_sw_parent_* - Functions that serve for a manipulation of the switch
-			  chip itself (it can be though of as a "parent" of the
-			  port, therefore the name). They are not port-specific.
-			  Caller might use arbitrary port netdevice of the same
-			  switch and it will make no difference.
-	ndo_sw_port_* - Functions that serve for a port-specific manipulation.
+Include files
+-------------
+
+#include <linux/netdevice.h>
+#include <net/switchdev.h>
+
+
+Switch ports
+------------
+
+On switch driver initialization, the driver will allocate and register a struct
+net_device (using register_netdev()) for each enumerated physical switch port.
+A port netdev is the software representation of the physical port and provides
+a conduit for control traffic to/from the controller and the network.  The port
+netdev is the basic building block for higher level constructs such as L2
+bridges, L2 bonds, VLANs, and tunnels, and L3 routers.  The port netdev also
+represents the physical properties of the physical port, such as statistics and
+PHY state, via standard netdev and ethtool interfaces.
+
+A switch management port is outside the scope of the switch device driver
+model.  Typically, the management port is not participating in offloaded data
+plane traffic and is loaded with a different driver, such as a NIC driver, on
+the management port device.
+
+Port netdev naming
+^^^^^^^^^^^^^^^^^^
+
+udev rules should be used for port netdev naming, using port MAC address as a
+key for example, rather than hard-coding netdev name in the driver.  Suggested
+naming convention is "swpX", where X is some unique identifier for the port.
+In the case of multiple switches, suggested convention is "swXpY" where X is
+unique switch ID and Y is unique port ID (to switch X).
+
+Port netdev ops
+^^^^^^^^^^^^^^^
+
+The port netdev will implement one or more switch driver netdev_ops, based on
+features supported:
+
+	ndo_swdev_id_get	Get physical ID of switch for port
+	ndo_swdev_features_get	Get switch feature list
+	ndo_swdev_flow_insert	Insert swdev_flow offloading rule
+	ndo_swdev_flow_remove	Remove swdev_flow offloading rule
+	ndo_swdev_fdb_add	Insert static bridge FDB entry for port
+	ndo_swdev_fdb_del	Delete static bridge FDB entry for port
+	ndo_swdev_stp_update	Notify of port STP state change
+	ndo_swdev_fib_ipv4_add	Insert IPv4 route entry
+	ndo_swdev_fib_ipv4_del	Delete IPv4 route entry
+
+Port switch ID
+^^^^^^^^^^^^^^
+
+The driver must implement ndo_swdev_id_get for each switch port, returning the
+same physical ID for each port within a switch.  The ID must be unique between
+switches.
+
+Port features
+^^^^^^^^^^^^^
+
+XXX: TODO
+
+
+Switch topology
+---------------
+
+The port netdevs representing the physical switch ports can be organized into
+higher-level switching constructs.  The default construct is a standalone
+router port, used to offload L3 forwarding.  Two or more ports can be bonded
+together to form a LAG.  Two or more ports (or bonds) can be bridged to form an
+L2 switch domain.  VLANs can be applied to sub-divide L2 domains.  L2 over L3
+tunnels can be built on ports.  Using Linux as the controller, these constructs
+are built using standard Linux tools such as the bridge driver, the bonding
+driver, the VLAN 8021q driver, and netlink-based tools such as iproute2.
+
+Alternatively, the port netdevs can be organized into bonds, bridges, vlans,
+and tunnels using OpenVSwitch, where a port netdev is a vport and a collection
+of ports is a datapath (bridge).
+
+Regardless of how ports are organized, the driver can know a particular port's
+position in the topology by monitoring NETDEV_CHANGEUPPER notifications, with
+the exception of VLAN membership.  For example, a port moved into a bond will
+see it's upper master change.  If that bond is moved into a bridge, the bond's
+upper master will change.  And so on.  The driver will track such movements to
+know what mode a port is in by registering for netdevice event
+NETDEV_CHANGEUPPER.
+
+VLAN membership for a particular port can be know by implementing
+ndo_vlan_rx_add_vid and ndo_vlan_rx_kill_vid.  This works if using the
+standalone 8021q VLAN driver or if creating VLANs on ports in a bridge.
+
+
+Linux as the controller
+-----------------------
+
+The Linux as controller model lets Linux own the control and management planes
+in software and, with the switch device driver model, Linux can offload all or
+part of the forwarding (data) plane to the switch device.  With forwarding
+plane offloaded, Linux will still maintain the neighbor and route tables in
+software as the authoritative source, but actual forwarding of packet data will
+be offloaded to the switch device.  Keeping Linux as the authoritative source
+retains the user's view of the system as a whole, and preserves the investment
+in user tools such as iproute2.
+
+L2 bridging
+^^^^^^^^^^^
+
+To offloading L2 bridging, the switch driver should support:
+
+	- static FDB entries installed on a bridge port vlan
+	- notification of learned src mac/vlans from switch device
+	- STP state changes on the port
+	- VLAN flooding of multicast/broadcast and unknown unicast packets
+
+
+Static FDB entries
+..................
+
+Static bridge FDB entries are installed, for example, using iproute2 bridge
+cmd:
+
+	bridge fdb add ADDR dev DEV master vlan VID
+
+This would install ADDR into the bridge's FDB for port DEV on vlan VID.  The
+switch driver implements two ndo_swdev ops to add/delete FDB entries in the
+switch device:
+
+	int ndo_sw_port_fdb_add(struct net_device *dev,
+				const unsigned char *addr,
+				u16 vid);
+
+	int ndo_sw_port_fdb_del(struct net_device *dev,
+				const unsigned char *addr,
+				u16 vid);
+
+The driver returns 0 on success, negative error code on failure.
+
+Note: the switch driver would not implement ndo_fdb_add/del/dump on a port
+netdev as these are intended for devices maintaining their own FDB.  In our
+case, we want the Linux bridge to own the FBD.
+
+Note: by default, the bridge does not filter on VLAN and only bridges untagged
+traffic.  To enable VLAN support, turn on VLAN filtering:
+
+	echo 1 >/sys/class/net/<bridge>/bridge/vlan_filtering
+
+Notification of learned src mac/vlans
+.....................................
+
+The switch device will learn source MAC address/VLAN on ingress packets and
+notify the switch driver of the learned mac/vlan/port tuple.  The switch
+driver, in turn, will call into the bridge module of a new learned mac/vlan
+using the API:
+
+	int br_fdb_learn_add(struct net_device *dev,
+			     const unsigned char *addr,
+			     u16 vid);
+
+When the switch device ages out a learned mac/vlan, again the driver is
+notified by the device and calls into the bridge module with:
+
+	int br_fdb_learn_del(struct net_device *dev,
+			     const unsigned char *addr,
+			     u16 vid);
+
+If learning is enabled in switch device/driver on a port, learning on the port
+should be disabled on the bridge using the bridge command:
+
+	bridge link set dev DEV learning off
+
+STP state change on port
+........................
+
+The bridge driver maintains the STP state for ports, and will notify the switch
+drivers of STP state change on a port using the swdev API:
+
+	int ndo_sw_port_stp_update(struct net_device *dev,
+				   u8 state);
+
+Where state is one of BR_STATE_*.  The switch driver can use STP state
+notification to update ingress packet filter list for the port.  For example,
+if port is DISABLED, no packets should pass, but if port moves to BLOCKED, then
+STP BPDUs and other IEEE 01:80:c2:xx:xx:xx link-local multicast packets can
+pass.
+
+The driver returns 0 on success, negative error code on failure.
+
+Note that STP BDPUs are untagged and STP state applies to all VLANs on the port
+so packet filters should be applied consistently across untagged and tagged
+VLANs on the port.
+
+Flooding L2 domain
+..................
+
+For a given L2 VLAN domain, the switch device should flood multicast/broadcast
+and unknown unicast packets to all ports in domain, if allowed by STP current
+state on each port.  The switch driver, knowing which ports are within which
+vlan L2 domain, can program the switch device for flooding.  There is no switch
+driver API to directly enable/disable flooding, but can be piggy-backed on the
+STP state notification.
+
+It is possible for the switch device to not handle flooding and push the
+packets up to the bridge driver for flooding.  This is not ideal as the number
+of ports scale in the L2 domain as the device is much more efficient at
+flooding packets that software.
+
+If the switch driver enabled device flooding, flooding should be turned off
+on the port in the bridge driver using:
+
+	bridge link set dev DEV flooding off
+
+L3 routing
+^^^^^^^^^^
+
+Offloading L3 routing requires that switch device be programmed with FIB
+entries from the kernel.  The switch device does a longest prefix match (LPM)
+on FIB entries matching route prefix and forwards the packet to the matching
+FIB entry's nexthop(s) egress ports.  To program the switch device, the
+switch driver is called with add/delete ops for IPv4 and IPv6 FIB entries.  For
+IPv4, the driver implements:
+
+	int ndo_sw_parent_fib_ipv4_add(struct net_device *dev,
+				       __be32 dst,
+				       int dst_len,
+				       struct fib_info *fi,
+				       u8 tos, u8 type,
+				       u32 tb_id);
+
+	int ndo_sw_parent_fib_ipv4_del(struct net_device *dev,
+				       __be32 dst,
+				       int dst_len,
+				       struct fib_info *fi,
+				       u8 tos, u8 type,
+				       u32 tb_id);
+
+to add/delete IPv4 dst/dest_len prefix on table tb_id.  The *fi structure holds
+details on the route and route's nexthops.  *dev is one of the switch port
+netdevs mentioned in the routes next hop list.  If the output ports referenced
+in the route's nexthop list don't all have the same switch ID, the driver is
+not called to add/delete the FIB entry.  (Something is seriously wrong in this
+case as the nexthop list is spanning ports on multiple switches).
+
+The driver should return 0 for success, -EOPNOTSUPP if route is OK but cannot
+be installed/removed to/from the switch device, and any other negative return
+code for failure.  The FIB entry will not be installed in the kernel's FIB if
+it could not be installed in switch device for any reason besides
+-EOPNOTSUPP (unless NLM_F_OFFLOAD_BEST_EFFORT is set).
+
+XXX: add/del IPv6 FIB API
+
+Nexthop and host route resolution
+.................................
+
+The FIB entry's nexthop list contains the nexthop tuple (gateway, dev), but for
+the switch device to forward the packet with the correct dst mac address, the
+nexthop gateways must be resolved to the neighbor's mac address.  Neighbor mac
+address discovery comes via the ARP (or ND) process and is available via the
+arp_tbl neighbor table.  To resolve the routes nexthop gateways, the driver
+must monitor arp_tbl updates using netevent NETEVENT_NEIGH_UPDATE.  In the case
+where a route is installed but the nexthop is not resolved, the driver can send
+pre-emptive ARP request packet(s) using arp_send API for the nexthop.
+
+In the case where the nexthop has no gateway, the driver can install to the
+device a /32 (or /128) host route when the arp_tbl is populated during the
+normal ARP processing, again listening to netevent NETEVENT_NEIGH_UPDATE.
+
+
+L3 over L2 tunnels
+^^^^^^^^^^^^^^^^^^
+
+XXX Document tunnel API
+
+
+OpenVSwitch as the (proxy) controller
+-------------------------------------
+
+XXX document ndo_swdev_flow_insert/remove.
