@@ -1713,15 +1713,19 @@ int fib_table_delete(struct fib_table *tb, struct fib_config *cfg)
 	return 0;
 }
 
-static int trie_flush_list(struct list_head *head)
+static int trie_flush_list(struct fib_table *tb, struct leaf *l,
+			   struct leaf_info *li)
 {
 	struct fib_alias *fa, *fa_node;
 	int found = 0;
 
-	list_for_each_entry_safe(fa, fa_node, head, fa_list) {
+	list_for_each_entry_safe(fa, fa_node, &li->falh, fa_list) {
 		struct fib_info *fi = fa->fa_info;
 
 		if (fi && (fi->fib_flags & RTNH_F_DEAD)) {
+			netdev_sw_fib_ipv4_del(l->key, li->plen, fi,
+					       fa->fa_tos, fa->fa_type,
+					       tb->tb_id);
 			list_del_rcu(&fa->fa_list);
 			fib_release_info(fa->fa_info);
 			alias_free_mem_rcu(fa);
@@ -1731,7 +1735,7 @@ static int trie_flush_list(struct list_head *head)
 	return found;
 }
 
-static int trie_flush_leaf(struct leaf *l)
+static int trie_flush_leaf(struct fib_table *tb, struct leaf *l)
 {
 	int found = 0;
 	struct hlist_head *lih = &l->list;
@@ -1739,7 +1743,7 @@ static int trie_flush_leaf(struct leaf *l)
 	struct leaf_info *li = NULL;
 
 	hlist_for_each_entry_safe(li, tmp, lih, hlist) {
-		found += trie_flush_list(&li->falh);
+		found += trie_flush_list(tb, l, li);
 
 		if (list_empty(&li->falh)) {
 			hlist_del_rcu(&li->hlist);
@@ -1828,7 +1832,7 @@ int fib_table_flush(struct fib_table *tb)
 	int found = 0;
 
 	for (l = trie_firstleaf(t); l; l = trie_nextleaf(l)) {
-		found += trie_flush_leaf(l);
+		found += trie_flush_leaf(tb, l);
 
 		if (ll && hlist_empty(&ll->list))
 			trie_leaf_remove(t, ll);
