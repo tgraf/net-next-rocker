@@ -32,6 +32,9 @@
 #include <linux/bitops.h>
 #include <net/switchdev.h>
 #include <net/rtnetlink.h>
+#include <net/ip_fib.h>
+#include <net/netevent.h>
+#include <net/arp.h>
 #include <asm-generic/io-64-nonatomic-lo-hi.h>
 #include <generated/utsrelease.h>
 
@@ -161,6 +164,19 @@ struct rocker_internal_vlan_tbl_entry {
 	__be16 vlan_id;
 };
 
+struct rocker_neigh_tbl_entry {
+	struct hlist_node entry;
+	__be32 ip_addr; /* key */
+	struct net_device *dev;
+	u32 ref_count;
+	u32 index;
+	u8 eth_dst[ETH_ALEN];
+	bool ttl_check;
+	struct delayed_work arp_work;
+	unsigned long arp_delay;
+	bool arp_running;
+};
+
 struct rocker_desc_info {
 	char *data; /* mapped */
 	size_t data_size;
@@ -233,6 +249,9 @@ struct rocker {
 	unsigned long internal_vlan_bitmap[ROCKER_INTERNAL_VLAN_BITMAP_LEN];
 	DECLARE_HASHTABLE(internal_vlan_tbl, 8);
 	spinlock_t internal_vlan_tbl_lock;
+	DECLARE_HASHTABLE(neigh_tbl, 16);
+	spinlock_t neigh_tbl_lock;
+	u32 neigh_tbl_next_index;
 };
 
 static const u8 zero_mac[ETH_ALEN]   = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
@@ -2095,9 +2114,9 @@ static int rocker_cmd_group_tbl_del(struct rocker *rocker,
 	return 0;
 }
 
-/*****************************************
- * Flow, group, FDB, internal VLAN tables
- *****************************************/
+/***************************************************
+ * Flow, group, FDB, internal VLAN and neigh tables
+ ***************************************************/
 
 static int rocker_init_tbls(struct rocker *rocker)
 {
@@ -2113,6 +2132,9 @@ static int rocker_init_tbls(struct rocker *rocker)
 	hash_init(rocker->internal_vlan_tbl);
 	spin_lock_init(&rocker->internal_vlan_tbl_lock);
 
+	hash_init(rocker->neigh_tbl);
+	spin_lock_init(&rocker->neigh_tbl_lock);
+
 	return 0;
 }
 
@@ -2123,6 +2145,7 @@ static void rocker_free_tbls(struct rocker *rocker)
 	struct rocker_group_tbl_entry *group_entry;
 	struct rocker_fdb_tbl_entry *fdb_entry;
 	struct rocker_internal_vlan_tbl_entry *internal_vlan_entry;
+	struct rocker_neigh_tbl_entry *neigh_entry;
 	struct hlist_node *tmp;
 	int bkt;
 
@@ -2146,6 +2169,11 @@ static void rocker_free_tbls(struct rocker *rocker)
 			   tmp, internal_vlan_entry, entry)
 		hash_del(&internal_vlan_entry->entry);
 	spin_unlock_irqrestore(&rocker->internal_vlan_tbl_lock, flags);
+
+	spin_lock_irqsave(&rocker->neigh_tbl_lock, flags);
+	hash_for_each_safe(rocker->neigh_tbl, bkt, tmp, neigh_entry, entry)
+		hash_del(&neigh_entry->entry);
+	spin_unlock_irqrestore(&rocker->neigh_tbl_lock, flags);
 }
 
 static struct rocker_flow_tbl_entry *
@@ -2393,6 +2421,29 @@ static int rocker_flow_tbl_bridge(struct rocker_port *rocker_port,
 	return rocker_flow_tbl_do(rocker_port, flags, entry);
 }
 
+static int rocker_flow_tbl_ucast4_routing(struct rocker_port *rocker_port,
+					  __be16 eth_type, __be32 dst,
+					  __be32 dst_mask,
+					  enum rocker_of_dpa_table_id goto_tbl,
+					  u32 group_id, int flags)
+{
+	struct rocker_flow_tbl_entry *entry;
+
+	entry = kzalloc(sizeof(*entry), rocker_op_flags_gfp(flags));
+	if (!entry)
+		return -ENOMEM;
+
+	entry->key.tbl_id = ROCKER_OF_DPA_TABLE_ID_UNICAST_ROUTING;
+	entry->key.priority = ROCKER_PRIORITY_UNICAST_ROUTING;
+	entry->key.ucast_routing.eth_type = eth_type;
+	entry->key.ucast_routing.dst4 = dst;
+	entry->key.ucast_routing.dst4_mask = dst_mask;
+	entry->key.ucast_routing.goto_tbl = goto_tbl;
+	entry->key.ucast_routing.group_id = group_id;
+
+	return rocker_flow_tbl_do(rocker_port, flags, entry);
+}
+
 static int rocker_flow_tbl_acl(struct rocker_port *rocker_port,
 			       int flags, u32 in_lport,
 			       u32 in_lport_mask,
@@ -2599,6 +2650,232 @@ static int rocker_group_l2_flood(struct rocker_port *rocker_port,
 	return rocker_group_l2_fan_out(rocker_port, flags,
 				       group_count, group_ids,
 				       group_id);
+}
+
+static int rocker_group_l3_unicast(struct rocker_port *rocker_port,
+				   int flags, u32 index, u8 *src_mac,
+				   u8 *dst_mac, __be16 vlan_id,
+				   bool ttl_check, u32 lport)
+{
+	struct rocker_group_tbl_entry *entry;
+
+	entry = kzalloc(sizeof(*entry), rocker_op_flags_gfp(flags));
+	if (!entry)
+		return -ENOMEM;
+
+	entry->group_id = ROCKER_GROUP_L3_UNICAST(index);
+	if (src_mac)
+		ether_addr_copy(entry->l3_unicast.eth_src, src_mac);
+	if (dst_mac)
+		ether_addr_copy(entry->l3_unicast.eth_dst, dst_mac);
+	entry->l3_unicast.vlan_id = vlan_id;
+	entry->l3_unicast.ttl_check = ttl_check;
+	entry->l3_unicast.group_id = ROCKER_GROUP_L2_INTERFACE(vlan_id, lport);
+
+	return rocker_group_tbl_do(rocker_port, flags, entry);
+}
+
+static struct rocker_neigh_tbl_entry *
+	rocker_neigh_tbl_find(struct rocker *rocker, __be32 ip_addr)
+{
+	struct rocker_neigh_tbl_entry *found;
+
+	hash_for_each_possible(rocker->neigh_tbl, found, entry, ip_addr)
+		if (found->ip_addr == ip_addr)
+			return found;
+
+	return NULL;
+}
+
+static void _rocker_neigh_add(struct rocker *rocker,
+			      struct rocker_neigh_tbl_entry *entry)
+{
+	entry->index = rocker->neigh_tbl_next_index++;
+	entry->ref_count++;
+	hash_add(rocker->neigh_tbl, &entry->entry, entry->ip_addr);
+}
+
+static void _rocker_neigh_del(struct rocker *rocker,
+			      struct rocker_neigh_tbl_entry *entry)
+{
+	if (--entry->ref_count == 0)
+		hash_del(&entry->entry);
+}
+
+static void _rocker_neigh_update(struct rocker *rocker,
+				 struct rocker_neigh_tbl_entry *entry,
+				 u8 *eth_dst)
+{
+	if (eth_dst)
+		ether_addr_copy(entry->eth_dst, eth_dst);
+	else
+		entry->ref_count++;
+}
+
+static void rocker_port_neigh_resolve_work(struct work_struct *work)
+{
+	struct rocker_neigh_tbl_entry *entry =
+		container_of(to_delayed_work(work),
+			     struct rocker_neigh_tbl_entry, arp_work);
+
+	arp_send(ARPOP_REQUEST, ETH_P_ARP, entry->ip_addr, entry->dev,
+		 entry->ip_addr, NULL, entry->dev->dev_addr, NULL);
+
+	entry->arp_delay = entry->arp_delay ? entry->arp_delay * 2 : HZ;
+	schedule_delayed_work(&entry->arp_work, entry->arp_delay);
+}
+
+static int rocker_port_neigh(struct rocker_port *rocker_port, int flags,
+			     __be32 ip_addr, u8 *eth_dst)
+{
+	struct rocker *rocker = rocker_port->rocker;
+	struct rocker_neigh_tbl_entry *entry;
+	struct rocker_neigh_tbl_entry *found;
+	unsigned long lock_flags;
+	__be16 eth_type = htons(ETH_P_IP);
+	enum rocker_of_dpa_table_id goto_tbl =
+		ROCKER_OF_DPA_TABLE_ID_ACL_POLICY;
+	u32 group_id;
+	bool adding = !(flags & ROCKER_OP_FLAG_REMOVE);
+	bool updating;
+	bool removing;
+	int err = 0;
+
+	entry = kzalloc(sizeof(*entry), rocker_op_flags_gfp(flags));
+	if (!entry)
+		return -ENOMEM;
+
+	entry->ip_addr = ip_addr;
+	entry->dev = rocker_port->dev;
+	ether_addr_copy(entry->eth_dst, eth_dst);
+	entry->ttl_check = true;
+
+	spin_lock_irqsave(&rocker->neigh_tbl_lock, lock_flags);
+
+	found = rocker_neigh_tbl_find(rocker, ip_addr);
+
+	updating = found && adding;
+	removing = found && !adding;
+	adding = !found && adding;
+
+	if (adding)
+		_rocker_neigh_add(rocker, entry);
+	else if (removing)
+		_rocker_neigh_del(rocker, found);
+	else if (updating)
+		_rocker_neigh_update(rocker, found, eth_dst);
+
+	if (found)
+		kfree(entry);
+	else
+		found = entry;
+
+	if (found->arp_running) {
+		found->arp_running = false;
+		cancel_delayed_work_sync(&found->arp_work);
+	}
+
+	spin_unlock_irqrestore(&rocker->neigh_tbl_lock, lock_flags);
+
+	if (!adding && !removing && !updating)
+		return -ENOENT;
+
+	/* For each active neighbor, we have an L3 unicast group and
+	 * a /32 route to the neighbor, which uses the L3 unicast
+	 * group.  The L3 unicast group can also be referred to by
+	 * other routes' nexthops.
+	 */
+
+	err = rocker_group_l3_unicast(rocker_port, flags,
+				      found->index,
+				      rocker_port->dev->dev_addr,
+				      found->eth_dst,
+				      rocker_port->internal_vlan_id,
+				      found->ttl_check,
+				      rocker_port->lport);
+	if (err) {
+		netdev_err(rocker_port->dev,
+			   "Error (%d) L3 unicast group index %d\n",
+			   err, found->index);
+		return err;
+	}
+
+	if (adding || removing) {
+		group_id = ROCKER_GROUP_L3_UNICAST(found->index);
+		err = rocker_flow_tbl_ucast4_routing(rocker_port,
+						     eth_type, found->ip_addr,
+						     inet_make_mask(32),
+						     goto_tbl, group_id,
+						     flags);
+
+		if (err)
+			netdev_err(rocker_port->dev,
+				   "Error (%d) /32 unicast route %pI4 group 0x%08x\n",
+				   err, &found->ip_addr, group_id);
+	}
+
+	return err;
+}
+
+static int rocker_port_nh(struct rocker_port *rocker_port, int flags,
+			  __be32 ip_addr, u32 *index)
+{
+	struct rocker *rocker = rocker_port->rocker;
+	struct rocker_neigh_tbl_entry *entry;
+	struct rocker_neigh_tbl_entry *found;
+	unsigned long lock_flags;
+	bool adding = !(flags & ROCKER_OP_FLAG_REMOVE);
+	bool updating;
+	bool removing;
+	bool completed;
+
+	entry = kzalloc(sizeof(*entry), rocker_op_flags_gfp(flags));
+	if (!entry)
+		return -ENOMEM;
+
+	entry->ip_addr = ip_addr;
+	entry->dev = rocker_port->dev;
+
+	spin_lock_irqsave(&rocker->neigh_tbl_lock, lock_flags);
+
+	found = rocker_neigh_tbl_find(rocker, ip_addr);
+
+	updating = found && adding;
+	removing = found && !adding;
+	adding = !found && adding;
+
+	if (adding)
+		_rocker_neigh_add(rocker, entry);
+	else if (removing)
+		_rocker_neigh_del(rocker, found);
+	else if (updating)
+		_rocker_neigh_update(rocker, found, NULL);
+
+	if (found)
+		kfree(entry);
+	else
+		found = entry;
+
+	/* Completed means neigh ip_addr is resolved to neigh mac.
+	 * If an entry is incomplete, we need to ARP to try to
+	 * resolve the neigh mac.
+	 */
+
+	completed = !is_zero_ether_addr(found->eth_dst);
+
+	if (!completed && !found->arp_running) {
+		INIT_DELAYED_WORK(&found->arp_work,
+				  rocker_port_neigh_resolve_work);
+		found->arp_delay = 0;
+		found->arp_running = true;
+		schedule_delayed_work(&found->arp_work, found->arp_delay);
+	}
+
+	spin_unlock_irqrestore(&rocker->neigh_tbl_lock, lock_flags);
+
+	*index = found->index;
+
+	return 0;
 }
 
 static int rocker_port_vlan_flood_group(struct rocker_port *rocker_port,
@@ -3322,6 +3599,79 @@ not_found:
 	spin_unlock_irqrestore(&rocker->internal_vlan_tbl_lock, lock_flags);
 }
 
+static int rocker_port_fib_ipv4(struct rocker_port *rocker_port, __be32 dst,
+				int dst_len, struct fib_info *fi, u32 tb_id,
+				int flags)
+{
+	struct fib_nh *nh = fi->fib_nh;
+	__be16 eth_type = htons(ETH_P_IP);
+	__be32 dst_mask = inet_make_mask(dst_len);
+	__be16 internal_vlan_id = rocker_port->internal_vlan_id;
+	enum rocker_of_dpa_table_id goto_tbl =
+		ROCKER_OF_DPA_TABLE_ID_ACL_POLICY;
+	u32 group_id;
+	bool nh_on_port = (fi->fib_dev == rocker_port->dev);
+	bool has_gw = !!nh->nh_gw;
+	u32 index;
+	int err;
+
+	/* XXX support ECMP */
+
+	if (has_gw && nh_on_port) {
+		err = rocker_port_nh(rocker_port, flags, nh->nh_gw, &index);
+		if (err)
+			return err;
+
+		group_id = ROCKER_GROUP_L3_UNICAST(index);
+	} else {
+		/* Send to CPU for processing */
+		group_id = ROCKER_GROUP_L2_INTERFACE(internal_vlan_id, 0);
+	}
+
+	err = rocker_flow_tbl_ucast4_routing(rocker_port,
+					     eth_type, dst,
+					     dst_mask, goto_tbl,
+					     group_id, flags);
+	if (err)
+		netdev_err(rocker_port->dev, "Error (%d) IPv4 route %pI4\n",
+			   err, &dst);
+
+	return err;
+}
+
+static int rocker_port_fib_ipv4_skip(struct net_device *dev,
+				     __be32 dst, int dst_len,
+				     struct fib_info *fi,
+				     u8 tos, u8 type, u32 tb_id)
+{
+	if (fi->fib_flags & RTM_F_CLONED)
+		return -EOPNOTSUPP;
+
+	if (tb_id != RT_TABLE_MAIN && tb_id != RT_TABLE_LOCAL)
+		return -EOPNOTSUPP;
+
+	if (type != RTN_UNICAST && type != RTN_BLACKHOLE &&
+	    type != RTN_UNREACHABLE && type != RTN_LOCAL &&
+	    type != RTN_BROADCAST)
+		return -EOPNOTSUPP;
+
+	if (tb_id == RT_TABLE_MAIN && type != RTN_UNICAST &&
+	    type != RTN_BLACKHOLE && type != RTN_UNREACHABLE)
+		return -EOPNOTSUPP;
+
+	if (tos != 0)
+		return -EOPNOTSUPP;
+
+	if (ipv4_is_loopback(dst))
+		return -EOPNOTSUPP;
+
+	/* XXX not handling ECMP right now */
+	if (fi->fib_nhs != 1)
+		return -EOPNOTSUPP;
+
+	return 0;
+}
+
 /*****************
  * Net device ops
  *****************/
@@ -3594,6 +3944,42 @@ static int rocker_port_sw_port_stp_update(struct net_device *dev, u8 state)
 	return rocker_port_stp_update(dev, state);
 }
 
+static int rocker_port_sw_parent_fib_ipv4_add(struct net_device *dev,
+					      __be32 dst, int dst_len,
+					      struct fib_info *fi,
+					      u8 tos, u8 type, u32 tb_id)
+{
+	struct rocker_port *rocker_port = netdev_priv(dev);
+	int flags = 0;
+	int err;
+
+	err = rocker_port_fib_ipv4_skip(dev, dst, dst_len, fi,
+					tos, type, tb_id);
+	if (err)
+		return err;
+
+	return rocker_port_fib_ipv4(rocker_port, dst, dst_len,
+				    fi, tb_id, flags);
+}
+
+static int rocker_port_sw_parent_fib_ipv4_del(struct net_device *dev,
+					      __be32 dst, int dst_len,
+					      struct fib_info *fi,
+					      u8 tos, u8 type, u32 tb_id)
+{
+	struct rocker_port *rocker_port = netdev_priv(dev);
+	int flags = ROCKER_OP_FLAG_REMOVE;
+	int err;
+
+	err = rocker_port_fib_ipv4_skip(dev, dst, dst_len, fi,
+					tos, type, tb_id);
+	if (err)
+		return err;
+
+	return rocker_port_fib_ipv4(rocker_port, dst, dst_len,
+				    fi, tb_id, flags);
+}
+
 static const struct net_device_ops rocker_port_netdev_ops = {
 	.ndo_open			= rocker_port_open,
 	.ndo_stop			= rocker_port_stop,
@@ -3605,6 +3991,8 @@ static const struct net_device_ops rocker_port_netdev_ops = {
 	.ndo_sw_port_fdb_add		= rocker_port_sw_port_fdb_add,
 	.ndo_sw_port_fdb_del		= rocker_port_sw_port_fdb_del,
 	.ndo_sw_port_stp_update		= rocker_port_sw_port_stp_update,
+	.ndo_sw_parent_fib_ipv4_add	= rocker_port_sw_parent_fib_ipv4_add,
+	.ndo_sw_parent_fib_ipv4_del	= rocker_port_sw_parent_fib_ipv4_del,
 };
 
 /********************
@@ -4147,6 +4535,50 @@ static struct notifier_block rocker_netdevice_nb __read_mostly = {
 	.notifier_call = rocker_netdevice_event,
 };
 
+/************************************
+ * Net event notifier event handler
+ ************************************/
+
+static int rocker_neigh_update(struct net_device *dev, struct neighbour *neigh)
+{
+	struct rocker_port *rocker_port = netdev_priv(dev);
+	int flags = neigh->nud_state & NUD_VALID ? 0 : ROCKER_OP_FLAG_REMOVE;
+	__be32 ip_addr = *(__be32 *)neigh->primary_key;
+	unsigned char *mac = neigh->ha;
+
+	return rocker_port_neigh(rocker_port, flags, ip_addr, mac);
+}
+
+static int rocker_netevent_event(struct notifier_block *unused,
+				 unsigned long event, void *ptr)
+{
+	struct net_device *dev;
+	struct neighbour *neigh;
+	int err;
+
+	switch (event) {
+	case NETEVENT_NEIGH_UPDATE:
+		neigh = ptr;
+		if (neigh->tbl != &arp_tbl)
+			return NOTIFY_DONE;
+		dev = neigh->dev;
+		if (!rocker_port_dev_check(dev))
+			return NOTIFY_DONE;
+		err = rocker_neigh_update(dev, neigh);
+		if (err)
+			netdev_warn(dev,
+				    "failed to handle neigh update (err %d)\n",
+				    err);
+		break;
+	}
+
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block rocker_netevent_nb __read_mostly = {
+	.notifier_call = rocker_netevent_event,
+};
+
 /***********************
  * Module init and exit
  ***********************/
@@ -4156,18 +4588,21 @@ static int __init rocker_module_init(void)
 	int err;
 
 	register_netdevice_notifier(&rocker_netdevice_nb);
+	register_netevent_notifier(&rocker_netevent_nb);
 	err = pci_register_driver(&rocker_pci_driver);
 	if (err)
 		goto err_pci_register_driver;
 	return 0;
 
 err_pci_register_driver:
+	unregister_netdevice_notifier(&rocker_netevent_nb);
 	unregister_netdevice_notifier(&rocker_netdevice_nb);
 	return err;
 }
 
 static void __exit rocker_module_exit(void)
 {
+	unregister_netevent_notifier(&rocker_netevent_nb);
 	unregister_netdevice_notifier(&rocker_netdevice_nb);
 	pci_unregister_driver(&rocker_pci_driver);
 }
