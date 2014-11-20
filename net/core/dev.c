@@ -5857,6 +5857,59 @@ int dev_get_phys_port_id(struct net_device *dev,
 EXPORT_SYMBOL(dev_get_phys_port_id);
 
 /**
+ *	dev_fdb_add - Add a basic FDB entry
+ *	@dev: device
+ *	@addr: MAC address
+ *	@vid: vlan ID
+ *
+ *	This is a wrapper for ndo_fdb_add op to be used in-kernel.
+ *	It adds basic FDB entry consisting of address and vlan ID only.
+ */
+int dev_fdb_add(struct net_device *dev, const unsigned char *addr, u16 vid)
+{
+	struct ndmsg ndm;
+	struct nlattr *tb[NDA_MAX + 1] = {0, };
+
+	if (!dev->netdev_ops->ndo_fdb_del)
+		return 0;
+
+	memset(&ndm, 0, sizeof(ndm));
+	ndm.ndm_family = AF_BRIDGE;
+	ndm.ndm_ifindex = dev->ifindex;
+	ndm.ndm_state = NUD_PERMANENT;
+
+	return dev->netdev_ops->ndo_fdb_add(&ndm, tb, dev, addr, vid,
+					    NLM_F_CREATE);
+}
+EXPORT_SYMBOL(dev_fdb_add);
+
+/**
+ *	dev_fdb_del - Delete a basic FDB entry
+ *	@dev: device
+ *	@addr: MAC address
+ *	@vid: vlan ID
+ *
+ *	This is a wrapper for ndo_fdb_del op to be used in-kernel.
+ *	It deletes basic FDB entry consisting of address and vlan ID only.
+ */
+int dev_fdb_del(struct net_device *dev, const unsigned char *addr, u16 vid)
+{
+	struct ndmsg ndm;
+	struct nlattr *tb[NDA_MAX + 1] = {0, };
+
+	if (!dev->netdev_ops->ndo_fdb_del)
+		return 0;
+
+	memset(&ndm, 0, sizeof(ndm));
+	ndm.ndm_family = AF_BRIDGE;
+	ndm.ndm_ifindex = dev->ifindex;
+	ndm.ndm_state = NUD_PERMANENT;
+
+	return dev->netdev_ops->ndo_fdb_del(&ndm, tb, dev, addr, vid);
+}
+EXPORT_SYMBOL(dev_fdb_del);
+
+/**
  *	dev_new_index	-	allocate an ifindex
  *	@net: the applicable net namespace
  *
