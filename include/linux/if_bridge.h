@@ -32,6 +32,17 @@ struct br_ip_list {
 	struct br_ip addr;
 };
 
+#define BR_HAIRPIN_MODE		0x00000001
+#define BR_BPDU_GUARD           0x00000002
+#define BR_ROOT_BLOCK		0x00000004
+#define BR_MULTICAST_FAST_LEAVE	0x00000008
+#define BR_ADMIN_COST		0x00000010
+#define BR_LEARNING		0x00000020
+#define BR_FLOOD		0x00000040
+#define BR_AUTO_MASK (BR_FLOOD | BR_LEARNING)
+#define BR_PROMISC		0x00000080
+#define BR_PROXYARP		0x00000100
+
 extern void brioctl_set(int (*ioctl_hook)(struct net *, unsigned int, void __user *));
 
 typedef int br_should_route_hook_t(struct sk_buff *skb);
