@@ -2688,11 +2688,13 @@ static int rtnl_fdb_dump(struct sk_buff *skb, struct netlink_callback *cb)
 }
 
 int ndo_dflt_bridge_getlink(struct sk_buff *skb, u32 pid, u32 seq,
-			    struct net_device *dev, u16 mode)
+			    struct net_device *dev, u16 mode,
+			    u32 flags, u32 mask)
 {
 	struct nlmsghdr *nlh;
 	struct ifinfomsg *ifm;
 	struct nlattr *br_afspec;
+	struct nlattr *protinfo;
 	u8 operstate = netif_running(dev) ? dev->operstate : IF_OPER_DOWN;
 	struct net_device *br_dev = netdev_master_upper_dev_get(dev);
 
@@ -2730,6 +2732,24 @@ int ndo_dflt_bridge_getlink(struct sk_buff *skb, u32 pid, u32 seq,
 		goto nla_put_failure;
 	}
 	nla_nest_end(skb, br_afspec);
+
+	protinfo = nla_nest_start(skb, IFLA_PROTINFO | NLA_F_NESTED);
+	if (!protinfo)
+		goto nla_put_failure;
+#define PROTINFO_FLAG(a, m) \
+	if ((mask & (m)) && nla_put_u8(skb, (a), !!(flags & (m)))) { \
+		nla_nest_cancel(skb, protinfo); \
+		goto nla_put_failure; \
+	}
+	PROTINFO_FLAG(IFLA_BRPORT_MODE, BR_HAIRPIN_MODE);
+	PROTINFO_FLAG(IFLA_BRPORT_GUARD, BR_BPDU_GUARD);
+	PROTINFO_FLAG(IFLA_BRPORT_FAST_LEAVE, BR_MULTICAST_FAST_LEAVE);
+	PROTINFO_FLAG(IFLA_BRPORT_PROTECT, BR_ROOT_BLOCK);
+	PROTINFO_FLAG(IFLA_BRPORT_LEARNING, BR_LEARNING);
+	PROTINFO_FLAG(IFLA_BRPORT_LEARNING_SYNC, BR_LEARNING_SYNC);
+	PROTINFO_FLAG(IFLA_BRPORT_UNICAST_FLOOD, BR_FLOOD);
+	PROTINFO_FLAG(IFLA_BRPORT_PROXYARP, BR_PROXYARP);
+	nla_nest_end(skb, protinfo);
 
 	return nlmsg_end(skb, nlh);
 nla_put_failure:
