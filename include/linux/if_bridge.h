@@ -42,6 +42,7 @@ struct br_ip_list {
 #define BR_AUTO_MASK (BR_FLOOD | BR_LEARNING)
 #define BR_PROMISC		0x00000080
 #define BR_PROXYARP		0x00000100
+#define BR_LEARNING_SYNC	0x00000200
 
 extern void brioctl_set(int (*ioctl_hook)(struct net *, unsigned int, void __user *));
 
